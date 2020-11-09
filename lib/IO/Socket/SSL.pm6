@@ -17,7 +17,6 @@ has Str $.localhost;
 has Int $.localport;
 has Str $.certfile;
 has Bool $.listening;
-has Str $.input-line-separator is rw = "\n";
 has Int $.ins = 0;
 
 has $.client-socket;
@@ -32,6 +31,9 @@ method new(*%args is copy) {
                                                                   || %args<client-socket>
                                                                   || %args<accepted-socket>
                                                                   || %args<listen-socket>;
+
+    %args<nl-in> //= %args<input-line-separator> // "\n";
+    %args<input-line-separator>:delete;
 
     if %args<host> {
         my ($host, $port) = %args<family> && %args<family> == PIO::PF_INET6()
@@ -103,6 +105,9 @@ method !initialize {
     self;
 }
 
+# For backwards compatibility
+method input-line-separator { return-rw $!nl-in }
+
 method recv(Int $n = 1048576, Bool :$bin = False) {
     $!ssl.read($n, :$bin);
 }
@@ -135,7 +140,9 @@ method write(Blob $b) {
 
 method get() {
     my $buf = buf8.new;
-    my $nl-bytes = $.input-line-separator.encode.bytes;
+    my @nl-in = $.nl-in.map({ $_ => .encode.bytes }).sort(*.value).reverse;
+    my $byte-check = any @nl-in».value;
+
     loop {
         my $more = self.recv(1, :bin);
         if !$more {
@@ -143,10 +150,14 @@ method get() {
             return $buf.decode;
         }
         $buf ~= $more;
-        next unless $buf.bytes >= $nl-bytes;
+        my $buf-bytes = $buf.bytes;
+        next unless $buf-bytes >= $byte-check;
 
-        if $buf.subbuf($buf.bytes - $nl-bytes, $nl-bytes).decode('latin-1') eq $.input-line-separator {
-            return $buf.subbuf(0, $buf.bytes - $nl-bytes).decode;
+        for @nl-in -> ( :key($nl-in), :value($nl-bytes) ) {
+            next unless $buf-bytes >= $nl-bytes;
+            if $buf.subbuf($buf-bytes - $nl-bytes, $nl-bytes).decode('latin-1') eq $nl-in {
+                return $buf.subbuf(0, $buf.bytes - $nl-bytes).decode;
+            }
         }
     }
 }
@@ -198,7 +209,8 @@ It uses C to setting up the connection so far (hope it will change soon).
 Gets params like:
 
 =item encoding             : connection's encoding
-=item input-line-separator : specifies how lines of input are separated
+=item nl-in                : specifies how lines of input are separated
+=item input-line-separator : deprecated, same as nl-in
 
 for client state:
 =item host : host to connect
